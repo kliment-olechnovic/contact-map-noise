@@ -1,0 +1,1250 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<title>Play sounds based on residue-residue contact map</title>
+		<style>
+			body { font-family: Arial, sans-serif; margin: 16px; }
+			label { display:block; margin: 10px 0 4px; }
+			input, button { font-size: 14px; }
+			input[type="file"], input[type="number"], input[type="text"] { width: 100%; box-sizing: border-box; padding: 6px; }
+			input[type="range"] { width: 100%; }
+			button { padding: 8px 10px; margin-right: 8px; margin-top: 10px; }
+			canvas { width: 100%; height: auto; border: 1px solid #aaa; image-rendering: pixelated; display:block; margin-top: 10px; }
+			pre { white-space: pre-wrap; border: 1px solid #ddd; padding: 8px; min-height: 44px; }
+			.row { margin-top: 10px; }
+			.stats { margin-top: 10px; }
+		</style>
+</head>
+<body>
+	<div id="container-for-controls">
+		<label for="fileInput">Input PDB or mmCIF file:</label>
+		<input id="fileInput" type="file" autocomplete="off"/>
+		<br>
+		<button onclick="runVoronotaLT('all')">Calculate all contacts</button>
+		<button onclick="runVoronotaLT('only_inter_chain')">Calculate only inter-chain contacts</button>
+	</div>
+
+	<div id="container-for-input-info"></div>
+	
+	<div id="container-for-error-log"></div>
+
+	<div id="container-for-log"></div>
+	
+	<div id="container-for-links"></div>
+	
+	<hr/>
+	
+	<h2>Matrix Sequencer</h2>
+
+	<label>Tempo (BPM) — one column per beat</label>
+	<input id="bpm" type="number" min="20" max="2000" step="1" value="480" />
+
+	<label>Master volume</label>
+	<input id="vol" type="range" min="0" max="1" step="0.001" value="0.85" />
+
+	<label>Instrument palette (comma-separated; repeats by row)</label>
+	<input id="palette" type="text" value="Kick, Snare, Closed Hat, Open Hat, Rimshot, Cowbell, Tambourine, Shaker, Conga Low, Conga High, Bongo, Woodblock, Bass Pluck, Funk Guitar, Electric Piano, Synth Lead, Synth Chord, FX Zap" />
+
+	<div class="row">
+	  <button id="play" disabled>Play</button>
+	  <button id="stop" disabled>Stop</button>
+	  <button id="rewind" disabled>Rewind</button>
+	</div>
+
+	<div class="stats">
+	  <div>Rows: <span id="rows">—</span></div>
+	  <div>Cols: <span id="cols">—</span></div>
+	  <div>Ones: <span id="ones">—</span></div>
+	  <div>Step: <span id="step">—</span></div>
+	</div>
+
+	<label>Step slider</label>
+	<input id="stepSlider" type="range" min="0" max="0" step="1" value="0" disabled />
+
+	<canvas id="matrix" width="1200" height="700" aria-label="Matrix visualization"></canvas>
+
+	<label>Parsing errors / warnings</label>
+	<pre id="log">—</pre>
+	
+	<hr/>
+	
+	<script src="voronota_lt_web.js"></script>
+	
+<script>
+  // -------------------------------
+  // State
+  // -------------------------------
+  let audioCtx = null;
+  let master = null;
+  let isPlaying = false;
+
+  // eventsByCol[c] = array of row indices that have 1 at (row, c)
+  let eventsByCol = [];
+  let nRows = 0;
+  let nCols = 0;
+  let nOnes = 0;
+
+  let curStep = 0;
+
+  // Scheduler
+  let schedulerTimer = null;
+  const lookaheadMs = 25;
+  const scheduleAheadSec = 0.12;
+  let nextNoteTime = 0;
+
+  // Visualization base cached
+  let baseCanvas = null;
+
+  // Visualization geometry (uniform spacing in X and Y)
+  let visScale = 1;
+  let visOffX = 0;
+  let visOffY = 0;
+
+  // -------------------------------
+  // UI
+  // -------------------------------
+  const elBpm = document.getElementById("bpm");
+  const elVol = document.getElementById("vol");
+  const elPalette = document.getElementById("palette");
+
+  const elPlay = document.getElementById("play");
+  const elStop = document.getElementById("stop");
+  const elRewind = document.getElementById("rewind");
+
+  const elRows = document.getElementById("rows");
+  const elCols = document.getElementById("cols");
+  const elOnes = document.getElementById("ones");
+  const elStep = document.getElementById("step");
+
+  const elSlider = document.getElementById("stepSlider");
+  const elLog = document.getElementById("log");
+
+  const cv = document.getElementById("matrix");
+  const ctx = cv.getContext("2d", { alpha: false });
+
+  function log(msg) {
+    elLog.textContent = (msg && msg.length) ? msg : "—";
+  }
+
+  function setStats() {
+    elRows.textContent = nRows ? String(nRows) : "—";
+    elCols.textContent = nCols ? String(nCols) : "—";
+    elOnes.textContent = nOnes ? String(nOnes) : "—";
+    elStep.textContent = nCols ? String(curStep) : "—";
+  }
+
+  function enableControls(loaded) {
+    elPlay.disabled = !loaded;
+    elStop.disabled = !loaded;
+    elRewind.disabled = !loaded;
+
+    elSlider.disabled = !loaded;
+    elSlider.min = 0;
+    elSlider.max = loaded ? String(Math.max(0, nCols - 1)) : "0";
+    elSlider.value = loaded ? String(curStep) : "0";
+  }
+
+  // -------------------------------
+  // Deterministic “random” per (row,col)
+  // -------------------------------
+  function hash32(a, b) {
+    // mix two 32-bit-ish ints into a pseudo-random 32-bit
+    let x = (a | 0) * 0x9E3779B1 ^ (b | 0) * 0x85EBCA77;
+    x ^= x >>> 16; x = Math.imul(x, 0x7FEB352D);
+    x ^= x >>> 15; x = Math.imul(x, 0x846CA68B);
+    x ^= x >>> 16;
+    return x >>> 0;
+  }
+  function rand01(row, col, salt=0) {
+    const h = hash32(row + salt * 1013, col + salt * 9176);
+    return h / 4294967295;
+  }
+  function randRange(row, col, salt, lo, hi) {
+    return lo + (hi - lo) * rand01(row, col, salt);
+  }
+
+  // -------------------------------
+  // Audio helpers
+  // -------------------------------
+  function ensureAudio() {
+    if (audioCtx) return;
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    master = audioCtx.createGain();
+    master.gain.value = parseFloat(elVol.value);
+    master.connect(audioCtx.destination);
+
+    elVol.addEventListener("input", () => {
+      if (master) master.gain.setTargetAtTime(parseFloat(elVol.value), audioCtx.currentTime, 0.01);
+    });
+  }
+
+  function makeNoiseBuffer() {
+    const sr = audioCtx.sampleRate;
+    const buffer = audioCtx.createBuffer(1, sr, sr);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < sr; i++) data[i] = (Math.random() * 2 - 1);
+    return buffer;
+  }
+
+  let cachedNoise = null;
+  function noiseSource() {
+    if (!cachedNoise) cachedNoise = makeNoiseBuffer();
+    const src = audioCtx.createBufferSource();
+    src.buffer = cachedNoise;
+    return src;
+  }
+
+  function expEnv(param, time, start, end, dur) {
+    const eps = 0.0001;
+    param.setValueAtTime(Math.max(eps, start), time);
+    param.exponentialRampToValueAtTime(Math.max(eps, end), time + dur);
+  }
+  function linEnv(param, time, start, end, dur) {
+    param.setValueAtTime(start, time);
+    param.linearRampToValueAtTime(end, time + dur);
+  }
+
+  function clamp01(x){ return Math.max(0, Math.min(1, x)); }
+
+  function biquad(type, freq, q=0.707) {
+    const f = audioCtx.createBiquadFilter();
+    f.type = type;
+    f.frequency.value = freq;
+    f.Q.value = q;
+    return f;
+  }
+
+  // mild saturation for funk bite
+  function softClipper(amount=0.5) {
+    const sh = audioCtx.createWaveShaper();
+    const n = 2048;
+    const curve = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      const x = (i * 2 / (n - 1)) - 1;
+      curve[i] = Math.tanh(x * (1 + 10 * amount));
+    }
+    sh.curve = curve;
+    sh.oversample = "2x";
+    return sh;
+  }
+
+  function midiToHz(m){ return 440 * Math.pow(2, (m - 69) / 12); }
+
+  // -------------------------------
+  // Groovy scale helpers (for “note change”)
+  // -------------------------------
+  const funkMinorPent = [0, 3, 5, 7, 10]; // minor pentatonic
+  const dorian_ish = [0, 2, 3, 5, 7, 9, 10];
+
+  function pickScaleNote(row, col, rootMidi, scale) {
+    const deg = (row * 3 + col) % scale.length;
+    const oct = ((row / scale.length) | 0) % 3;
+    return rootMidi + 12 * oct + scale[deg];
+  }
+
+  // -------------------------------
+  // Instruments
+  // Each instrument now takes (t, v, row, col) and varies pitch/timbre with row/col.
+  // -------------------------------
+  function instKick(t, v, row, col) {
+    const o = audioCtx.createOscillator();
+    o.type = "sine";
+    const g = audioCtx.createGain();
+
+    // vary thump + drop speed slightly
+    const fStart = randRange(row, col, 1, 95, 125);
+    const fEnd   = randRange(row, col, 2, 40, 55);
+    const drop   = randRange(row, col, 3, 0.07, 0.11);
+
+    o.frequency.setValueAtTime(fStart, t);
+    o.frequency.exponentialRampToValueAtTime(fEnd, t + drop);
+
+    const dur = randRange(row, col, 4, 0.11, 0.16);
+    expEnv(g.gain, t, 1.0 * v, 0.0001, dur);
+
+    o.connect(g).connect(master);
+    o.start(t);
+    o.stop(t + dur + 0.04);
+  }
+
+  function instSnare(t, v, row, col) {
+    const n = noiseSource();
+    const hpFreq = randRange(row, col, 10, 700, 1400);
+    const bpFreq = randRange(row, col, 11, 2000, 3400);
+
+    const hp = biquad("highpass", hpFreq, 0.7);
+    const bp = biquad("bandpass", bpFreq, randRange(row, col, 12, 0.6, 1.2));
+    const sh = softClipper(0.25 + 0.2 * rand01(row, col, 13));
+
+    const ng = audioCtx.createGain();
+    expEnv(ng.gain, t, 0.70 * v, 0.0001, randRange(row, col, 14, 0.12, 0.18));
+
+    // small tonal body that changes
+    const o = audioCtx.createOscillator();
+    o.type = "triangle";
+    o.frequency.setValueAtTime(randRange(row, col, 15, 170, 240), t);
+    const og = audioCtx.createGain();
+    expEnv(og.gain, t, 0.16 * v, 0.0001, randRange(row, col, 16, 0.07, 0.11));
+
+    n.connect(hp).connect(bp).connect(sh).connect(ng).connect(master);
+    o.connect(og).connect(master);
+
+    n.start(t); o.start(t);
+    n.stop(t + 0.20); o.stop(t + 0.14);
+  }
+
+  function instClap(t, v, row, col) {
+    const n = noiseSource();
+    const bp = biquad("bandpass", randRange(row, col, 20, 1800, 2800), 0.9);
+    const sh = softClipper(0.25 + 0.25 * rand01(row, col, 21));
+
+    const g = audioCtx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+
+    const base = randRange(row, col, 22, 0.014, 0.020);
+    const bursts = [0.0, base, base*2.0, base*3.2];
+    for (const dt of bursts) {
+      const tt = t + dt;
+      g.gain.setValueAtTime(0.0001, tt);
+      linEnv(g.gain, tt, 0.24 * v, 0.0001, randRange(row, col, 23, 0.05, 0.07));
+    }
+
+    n.connect(bp).connect(sh).connect(g).connect(master);
+    n.start(t);
+    n.stop(t + 0.18);
+  }
+
+  function instClosedHat(t, v, row, col) {
+    const n = noiseSource();
+    const hp = biquad("highpass", randRange(row, col, 30, 5500, 8500), 0.7);
+    const bp = biquad("bandpass", randRange(row, col, 31, 8000, 11500), randRange(row, col, 32, 0.6, 1.2));
+    const sh = softClipper(0.15 + 0.2 * rand01(row, col, 33));
+    const g = audioCtx.createGain();
+    expEnv(g.gain, t, 0.26 * v, 0.0001, randRange(row, col, 34, 0.035, 0.055));
+    n.connect(hp).connect(bp).connect(sh).connect(g).connect(master);
+    n.start(t);
+    n.stop(t + 0.08);
+  }
+
+  function instOpenHat(t, v, row, col) {
+    const n = noiseSource();
+    const hp = biquad("highpass", randRange(row, col, 40, 5000, 7500), 0.7);
+    const bp = biquad("bandpass", randRange(row, col, 41, 7500, 10500), randRange(row, col, 42, 0.5, 1.0));
+    const sh = softClipper(0.15 + 0.2 * rand01(row, col, 43));
+    const g = audioCtx.createGain();
+    expEnv(g.gain, t, 0.20 * v, 0.0001, randRange(row, col, 44, 0.18, 0.32));
+    n.connect(hp).connect(bp).connect(sh).connect(g).connect(master);
+    n.start(t);
+    n.stop(t + 0.36);
+  }
+
+  function instRimshot(t, v, row, col) {
+    const o = audioCtx.createOscillator();
+    o.type = "square";
+    o.frequency.setValueAtTime(randRange(row, col, 50, 1400, 2400), t);
+    const hp = biquad("highpass", randRange(row, col, 51, 700, 1200), 0.7);
+    const sh = softClipper(0.35 + 0.25 * rand01(row, col, 52));
+    const g = audioCtx.createGain();
+    expEnv(g.gain, t, 0.12 * v, 0.0001, randRange(row, col, 53, 0.02, 0.04));
+    o.connect(hp).connect(sh).connect(g).connect(master);
+    o.start(t);
+    o.stop(t + 0.06);
+  }
+
+  function instCowbell(t, v, row, col) {
+    const o1 = audioCtx.createOscillator();
+    const o2 = audioCtx.createOscillator();
+    o1.type = "square"; o2.type = "square";
+
+    const f1 = randRange(row, col, 60, 500, 650);
+    const f2 = f1 * randRange(row, col, 61, 1.45, 1.65);
+    o1.frequency.setValueAtTime(f1, t);
+    o2.frequency.setValueAtTime(f2, t);
+
+    const bp = biquad("bandpass", randRange(row, col, 62, 900, 1400), randRange(row, col, 63, 1.8, 3.2));
+    const sh = softClipper(0.2 + 0.25 * rand01(row, col, 64));
+    const g = audioCtx.createGain();
+    expEnv(g.gain, t, 0.14 * v, 0.0001, randRange(row, col, 65, 0.08, 0.14));
+
+    o1.connect(bp); o2.connect(bp);
+    bp.connect(sh).connect(g).connect(master);
+    o1.start(t); o2.start(t);
+    o1.stop(t + 0.18); o2.stop(t + 0.18);
+  }
+
+  function instTambourine(t, v, row, col) {
+    const n = noiseSource();
+    const hp = biquad("highpass", randRange(row, col, 70, 5200, 8200), 0.9);
+    const bp = biquad("bandpass", randRange(row, col, 71, 7000, 10000), randRange(row, col, 72, 0.6, 1.0));
+    const sh = softClipper(0.12 + 0.18 * rand01(row, col, 73));
+    const g = audioCtx.createGain();
+    expEnv(g.gain, t, 0.16 * v, 0.0001, randRange(row, col, 74, 0.09, 0.16));
+    n.connect(hp).connect(bp).connect(sh).connect(g).connect(master);
+    n.start(t);
+    n.stop(t + 0.18);
+  }
+
+  function instShaker(t, v, row, col) {
+    const n = noiseSource();
+    const hp = biquad("highpass", randRange(row, col, 80, 4200, 7000), 0.8);
+    const sh = softClipper(0.10 + 0.15 * rand01(row, col, 81));
+    const g = audioCtx.createGain();
+    const dt = randRange(row, col, 82, 0.016, 0.026);
+    const bursts = [0.0, dt];
+    for (const b of bursts) {
+      const tt = t + b;
+      g.gain.setValueAtTime(0.0001, tt);
+      expEnv(g.gain, tt, 0.11 * v, 0.0001, randRange(row, col, 83, 0.04, 0.06));
+    }
+    n.connect(hp).connect(sh).connect(g).connect(master);
+    n.start(t);
+    n.stop(t + 0.13);
+  }
+
+  function instCongaLow(t, v, row, col) {
+    const o = audioCtx.createOscillator();
+    o.type = "sine";
+    const f0 = randRange(row, col, 90, 150, 220);
+    o.frequency.setValueAtTime(f0, t);
+    o.frequency.exponentialRampToValueAtTime(f0 * randRange(row, col, 91, 0.80, 0.90), t + randRange(row, col, 92, 0.06, 0.10));
+    const bp = biquad("bandpass", randRange(row, col, 93, 350, 550), randRange(row, col, 94, 0.9, 1.5));
+    const sh = softClipper(0.18 + 0.2 * rand01(row, col, 95));
+    const g = audioCtx.createGain();
+    expEnv(g.gain, t, 0.28 * v, 0.0001, randRange(row, col, 96, 0.14, 0.22));
+    o.connect(bp).connect(sh).connect(g).connect(master);
+    o.start(t);
+    o.stop(t + 0.28);
+  }
+
+  function instCongaHigh(t, v, row, col) {
+    const o = audioCtx.createOscillator();
+    o.type = "sine";
+    const f0 = randRange(row, col, 100, 240, 340);
+    o.frequency.setValueAtTime(f0, t);
+    o.frequency.exponentialRampToValueAtTime(f0 * randRange(row, col, 101, 0.82, 0.92), t + randRange(row, col, 102, 0.05, 0.09));
+    const bp = biquad("bandpass", randRange(row, col, 103, 600, 900), randRange(row, col, 104, 1.0, 1.6));
+    const sh = softClipper(0.18 + 0.2 * rand01(row, col, 105));
+    const g = audioCtx.createGain();
+    expEnv(g.gain, t, 0.24 * v, 0.0001, randRange(row, col, 106, 0.12, 0.20));
+    o.connect(bp).connect(sh).connect(g).connect(master);
+    o.start(t);
+    o.stop(t + 0.26);
+  }
+
+  function instBongo(t, v, row, col) {
+    const o = audioCtx.createOscillator();
+    o.type = "triangle";
+    const base = (row % 2 === 0) ? 360 : 480;
+    const f0 = base * randRange(row, col, 110, 0.92, 1.08);
+    o.frequency.setValueAtTime(f0, t);
+    o.frequency.exponentialRampToValueAtTime(f0 * 0.88, t + randRange(row, col, 111, 0.04, 0.07));
+    const sh = softClipper(0.12 + 0.2 * rand01(row, col, 112));
+    const g = audioCtx.createGain();
+    expEnv(g.gain, t, 0.20 * v, 0.0001, randRange(row, col, 113, 0.07, 0.12));
+    o.connect(sh).connect(g).connect(master);
+    o.start(t);
+    o.stop(t + 0.16);
+  }
+
+  function instWoodblock(t, v, row, col) {
+    const o = audioCtx.createOscillator();
+    o.type = "square";
+    const f0 = randRange(row, col, 120, 900, 1700);
+    o.frequency.setValueAtTime(f0, t);
+    const bp = biquad("bandpass", f0 * randRange(row, col, 121, 1.0, 1.6), randRange(row, col, 122, 2.0, 4.0));
+    const g = audioCtx.createGain();
+    expEnv(g.gain, t, 0.10 * v, 0.0001, randRange(row, col, 123, 0.035, 0.06));
+    o.connect(bp).connect(g).connect(master);
+    o.start(t);
+    o.stop(t + 0.08);
+  }
+
+  // Tonal instruments: strong note changes
+  function instBassPluck(t, v, row, col) {
+    const o = audioCtx.createOscillator();
+    o.type = "sawtooth";
+
+    const midi = pickScaleNote(row, col, 36, funkMinorPent); // low root
+    const f = midiToHz(midi) * randRange(row, col, 130, 0.99, 1.01);
+
+    o.frequency.setValueAtTime(f, t);
+
+    const lp = biquad("lowpass", randRange(row, col, 131, 500, 1200), 0.8);
+    const sh = softClipper(0.35 + 0.15 * rand01(row, col, 132));
+    const g = audioCtx.createGain();
+    expEnv(g.gain, t, 0.22 * v, 0.0001, randRange(row, col, 133, 0.12, 0.20));
+
+    o.connect(lp).connect(sh).connect(g).connect(master);
+    o.start(t);
+    o.stop(t + 0.28);
+  }
+
+  function instFunkGuitar(t, v, row, col) {
+    const o1 = audioCtx.createOscillator();
+    const o2 = audioCtx.createOscillator();
+    const o3 = audioCtx.createOscillator();
+    o1.type = "sawtooth";
+    o2.type = "square";
+    o3.type = "triangle";
+
+    const root = pickScaleNote(row, col, 52, dorian_ish);
+    const m1 = root;
+    const m2 = root + ((row % 2) ? 3 : 4); // minor/major third flip
+    const m3 = root + 7;
+
+    o1.frequency.setValueAtTime(midiToHz(m1), t);
+    o2.frequency.setValueAtTime(midiToHz(m2), t);
+    o3.frequency.setValueAtTime(midiToHz(m3), t);
+
+    const hp = biquad("highpass", 140, 0.7);
+    const bp = biquad("bandpass", randRange(row, col, 140, 1200, 2600), randRange(row, col, 141, 1.0, 1.8));
+    const sh = softClipper(0.55);
+
+    const g = audioCtx.createGain();
+    expEnv(g.gain, t, 0.15 * v, 0.0001, randRange(row, col, 142, 0.05, 0.10));
+
+    o1.connect(hp); o2.connect(hp); o3.connect(hp);
+    hp.connect(bp).connect(sh).connect(g).connect(master);
+
+    o1.start(t); o2.start(t); o3.start(t);
+    o1.stop(t + 0.14); o2.stop(t + 0.14); o3.stop(t + 0.14);
+  }
+
+  function instElectricPiano(t, v, row, col) {
+    const o1 = audioCtx.createOscillator();
+    const o2 = audioCtx.createOscillator();
+    o1.type = "sine";
+    o2.type = "triangle";
+
+    const midi = pickScaleNote(row, col, 48, funkMinorPent) + 12; // mid
+    const f = midiToHz(midi);
+
+    o1.frequency.setValueAtTime(f, t);
+    o2.frequency.setValueAtTime(f * 2, t);
+
+    const lp = biquad("lowpass", randRange(row, col, 150, 2200, 5200), 0.7);
+    const sh = softClipper(0.20 + 0.1 * rand01(row, col, 151));
+    const g = audioCtx.createGain();
+    expEnv(g.gain, t, 0.12 * v, 0.0001, randRange(row, col, 152, 0.22, 0.42));
+
+    o1.connect(lp);
+    o2.connect(lp);
+    lp.connect(sh).connect(g).connect(master);
+
+    o1.start(t); o2.start(t);
+    o1.stop(t + 0.55); o2.stop(t + 0.55);
+  }
+
+  function instSynthLead(t, v, row, col) {
+    const o = audioCtx.createOscillator();
+    o.type = (row % 3 === 0) ? "square" : "sawtooth";
+
+    const midi = pickScaleNote(row, col, 60, dorian_ish) + ((col % 8 === 0) ? 12 : 0);
+    const f = midiToHz(midi) * randRange(row, col, 160, 0.995, 1.005);
+    o.frequency.setValueAtTime(f, t);
+
+    const lp = biquad("lowpass", randRange(row, col, 161, 1400, 4200), 0.9);
+    const sh = softClipper(0.45);
+    const g = audioCtx.createGain();
+    expEnv(g.gain, t, 0.10 * v, 0.0001, randRange(row, col, 162, 0.10, 0.24));
+
+    o.connect(lp).connect(sh).connect(g).connect(master);
+    o.start(t);
+    o.stop(t + 0.30);
+  }
+
+  function instSynthChord(t, v, row, col) {
+    const o1 = audioCtx.createOscillator();
+    const o2 = audioCtx.createOscillator();
+    const o3 = audioCtx.createOscillator();
+    o1.type = "sawtooth";
+    o2.type = "sawtooth";
+    o3.type = "triangle";
+
+    const root = pickScaleNote(row, col, 48, dorian_ish);
+    const third = root + ((row % 2) ? 3 : 4);
+    const fifth = root + 7;
+
+    o1.frequency.setValueAtTime(midiToHz(root), t);
+    o2.frequency.setValueAtTime(midiToHz(third), t);
+    o3.frequency.setValueAtTime(midiToHz(fifth), t);
+
+    const lp = biquad("lowpass", randRange(row, col, 170, 1200, 2800), 0.8);
+    const sh = softClipper(0.25);
+    const g = audioCtx.createGain();
+    expEnv(g.gain, t, 0.09 * v, 0.0001, randRange(row, col, 171, 0.22, 0.40));
+
+    o1.connect(lp); o2.connect(lp); o3.connect(lp);
+    lp.connect(sh).connect(g).connect(master);
+
+    o1.start(t); o2.start(t); o3.start(t);
+    o1.stop(t + 0.55); o2.stop(t + 0.55); o3.stop(t + 0.55);
+  }
+
+  function instFXZap(t, v, row, col) {
+    const o = audioCtx.createOscillator();
+    o.type = "sawtooth";
+    const startF = randRange(row, col, 180, 800, 2200);
+    const endF   = randRange(row, col, 181, 120, 320);
+    o.frequency.setValueAtTime(startF, t);
+    o.frequency.exponentialRampToValueAtTime(endF, t + randRange(row, col, 182, 0.06, 0.14));
+
+    const sh = softClipper(0.65);
+    const g = audioCtx.createGain();
+    expEnv(g.gain, t, 0.08 * v, 0.0001, randRange(row, col, 183, 0.09, 0.16));
+
+    o.connect(sh).connect(g).connect(master);
+    o.start(t);
+    o.stop(t + 0.20);
+
+    const n = noiseSource();
+    const hp = biquad("highpass", randRange(row, col, 184, 4000, 9000), 0.7);
+    const ng = audioCtx.createGain();
+    expEnv(ng.gain, t, 0.04 * v, 0.0001, 0.02);
+    n.connect(hp).connect(ng).connect(master);
+    n.start(t);
+    n.stop(t + 0.04);
+  }
+
+  const instrumentLibrary = new Map([
+    ["Kick", instKick],
+    ["Snare", instSnare],
+    ["Closed Hat", instClosedHat],
+    ["Open Hat", instOpenHat],
+    ["Clap", instClap],
+    ["Rimshot", instRimshot],
+    ["Cowbell", instCowbell],
+    ["Tambourine", instTambourine],
+    ["Shaker", instShaker],
+    ["Conga Low", instCongaLow],
+    ["Conga High", instCongaHigh],
+    ["Bongo", instBongo],
+    ["Woodblock", instWoodblock],
+    ["Bass Pluck", instBassPluck],
+    ["Funk Guitar", instFunkGuitar],
+    ["Electric Piano", instElectricPiano],
+    ["Synth Lead", instSynthLead],
+    ["Synth Chord", instSynthChord],
+    ["FX Zap", instFXZap],
+  ]);
+
+  function parsePalette() {
+    const raw = elPalette.value || "";
+    const names = raw.split(",").map(s => s.trim()).filter(Boolean);
+    const funcs = [];
+    const unknown = [];
+    for (const n of names) {
+      if (instrumentLibrary.has(n)) funcs.push(instrumentLibrary.get(n));
+      else unknown.push(n);
+    }
+    if (!funcs.length) funcs.push(instKick);
+    return { funcs, unknown };
+  }
+
+  // -------------------------------
+  // Timing: one step == one beat
+  // -------------------------------
+  function stepDurationSec() {
+    const bpm = Math.max(20, Math.min(2000, parseFloat(elBpm.value) || 480));
+    return 60.0 / bpm;
+  }
+
+  // -------------------------------
+  // Visualization
+  // -------------------------------
+  function updateVisGeometry() {
+    if (!nRows || !nCols) { visScale = 1; visOffX = 0; visOffY = 0; return; }
+    visScale = Math.min(cv.width / nCols, cv.height / nRows);
+    const usedW = visScale * nCols;
+    const usedH = visScale * nRows;
+    visOffX = (cv.width - usedW) * 0.5;
+    visOffY = (cv.height - usedH) * 0.5;
+  }
+
+  function buildBaseRaster() {
+    baseCanvas = document.createElement("canvas");
+    baseCanvas.width = cv.width;
+    baseCanvas.height = cv.height;
+    const bctx = baseCanvas.getContext("2d", { alpha: false });
+
+    bctx.fillStyle = "#ffffff";
+    bctx.fillRect(0, 0, baseCanvas.width, baseCanvas.height);
+
+    if (!nRows || !nCols || !nOnes) return;
+
+    updateVisGeometry();
+
+    const cellsBigEnough = (visScale >= 2);
+    const sparseEnough = (nOnes <= 20000);
+
+    if (cellsBigEnough || sparseEnough) {
+      const dotSize = Math.max(2, Math.min(14, Math.floor(visScale)));
+      bctx.fillStyle = "#000000";
+
+      for (let c = 0; c < eventsByCol.length; c++) {
+        const rowsHere = eventsByCol[c];
+        if (!rowsHere || rowsHere.length === 0) continue;
+
+        const cx = visOffX + (c + 0.5) * visScale;
+        for (let i = 0; i < rowsHere.length; i++) {
+          const r = rowsHere[i];
+          const cy = visOffY + (r + 0.5) * visScale;
+          bctx.fillRect(cx - dotSize / 2, cy - dotSize / 2, dotSize, dotSize);
+        }
+      }
+      return;
+    }
+
+    // Aggregated pixel raster
+    const w = baseCanvas.width;
+    const h = baseCanvas.height;
+    const img = bctx.createImageData(w, h);
+    const data = img.data;
+    for (let i = 0; i < data.length; i += 4) {
+      data[i+0] = 255; data[i+1] = 255; data[i+2] = 255; data[i+3] = 255;
+    }
+    for (let c = 0; c < eventsByCol.length; c++) {
+      const rowsHere = eventsByCol[c];
+      if (!rowsHere || rowsHere.length === 0) continue;
+      const x = Math.max(0, Math.min(w - 1, Math.floor(visOffX + c * visScale)));
+      for (let i = 0; i < rowsHere.length; i++) {
+        const r = rowsHere[i];
+        const y = Math.max(0, Math.min(h - 1, Math.floor(visOffY + r * visScale)));
+        const p = (y * w + x) * 4;
+        data[p + 0] = 0; data[p + 1] = 0; data[p + 2] = 0;
+      }
+    }
+    bctx.putImageData(img, 0, 0);
+  }
+
+  function drawMatrix() {
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0,0,cv.width,cv.height);
+
+    if (baseCanvas) ctx.drawImage(baseCanvas, 0, 0);
+    if (!nCols || !nRows) return;
+
+    updateVisGeometry();
+
+    const x = visOffX + (curStep + 0.5) * visScale;
+    ctx.save();
+    ctx.strokeStyle = "#2b6cff";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x, cv.height);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  // -------------------------------
+  // Scheduler
+  // -------------------------------
+  function scheduleStep(stepIndex, time) {
+    if (!nCols) return;
+
+    const { funcs, unknown } = parsePalette();
+    if (unknown.length && !log._warnedPalette) {
+      log._warnedPalette = true;
+      log(`Warning: unknown instrument names ignored: ${unknown.join(", ")}\nAvailable: ${Array.from(instrumentLibrary.keys()).join(", ")}`);
+    } else if (!unknown.length && !log._warnedPalette) {
+      log("");
+    }
+
+    const rows = eventsByCol[stepIndex];
+    if (!rows || rows.length === 0) return;
+
+    for (let i = 0; i < rows.length; i++) {
+      const r = rows[i];
+      const inst = funcs[r % funcs.length];
+      const v = clamp01(0.85);
+      try { inst(time, v, r, stepIndex); } catch (e) { console.warn("Instrument error:", e); }
+    }
+  }
+
+  function schedulerTick() {
+    if (!isPlaying || !audioCtx) return;
+
+    const now = audioCtx.currentTime;
+    while (nextNoteTime < now + scheduleAheadSec) {
+      const stepIndex = curStep % nCols;
+      scheduleStep(stepIndex, nextNoteTime);
+
+      nextNoteTime += stepDurationSec();
+      curStep = (curStep + 1) % nCols;
+
+      elSlider.value = String(curStep);
+      setStats();
+    }
+
+    drawMatrix();
+  }
+
+  function start() {
+    if (!nCols) return;
+
+    ensureAudio();
+    if (audioCtx.state === "suspended") audioCtx.resume().catch(() => {});
+
+    if (isPlaying) return;
+    isPlaying = true;
+
+    nextNoteTime = audioCtx.currentTime + 0.02;
+    schedulerTimer = setInterval(schedulerTick, lookaheadMs);
+
+    elPlay.disabled = true;
+    elStop.disabled = false;
+    elRewind.disabled = false;
+
+    drawMatrix();
+  }
+
+  function stop() {
+    isPlaying = false;
+    if (schedulerTimer) clearInterval(schedulerTimer);
+    schedulerTimer = null;
+
+    elPlay.disabled = !nCols;
+    elStop.disabled = !nCols;
+    elRewind.disabled = !nCols;
+
+    drawMatrix();
+  }
+
+  function rewind() {
+    curStep = 0;
+    elSlider.value = "0";
+    setStats();
+    drawMatrix();
+  }
+
+  // -------------------------------
+  // Parsing
+  // -------------------------------
+  function parseTextToSparse(text) {
+    const lines = text.split(/\r?\n/);
+
+    let maxR = -1;
+    let maxC = -1;
+    let ones = 0;
+
+    const pairs = [];
+    let bad = 0;
+
+    for (let idx = 0; idx < lines.length; idx++) {
+      const raw = lines[idx].trim();
+      if (!raw) continue;
+      if (raw.startsWith("#")) continue;
+
+      const parts = raw.split(/\s+/);
+      if (parts.length < 2) { bad++; continue; }
+
+      const r = Number(parts[0]);
+      const c = Number(parts[1]);
+
+      if (!Number.isFinite(r) || !Number.isFinite(c) ||
+          r < 0 || c < 0 ||
+          (r | 0) !== r || (c | 0) !== c) {
+        bad++;
+        continue;
+      }
+
+      pairs.push([r, c]);
+      if (r > maxR) maxR = r;
+      if (c > maxC) maxC = c;
+      ones++;
+    }
+
+    if (ones === 0) {
+      return {
+        eventsByCol: [],
+        nRows: 0,
+        nCols: 0,
+        nOnes: 0,
+        warning: bad ? `No valid coordinates found. Skipped ${bad} malformed line(s).` : "No valid coordinates found."
+      };
+    }
+
+    const rows = maxR + 1;
+    const cols = maxC + 1;
+
+    const byCol = new Array(cols);
+    for (let i = 0; i < cols; i++) byCol[i] = [];
+
+    for (let i = 0; i < pairs.length; i++) {
+      const [r, c] = pairs[i];
+      byCol[c].push(r);
+    }
+
+    // De-dup per column
+    for (let c = 0; c < cols; c++) {
+      const arr = byCol[c];
+      if (arr.length <= 1) continue;
+      arr.sort((a, b) => a - b);
+      let w = 1;
+      for (let i = 1; i < arr.length; i++) {
+        if (arr[i] !== arr[i - 1]) arr[w++] = arr[i];
+      }
+      arr.length = w;
+    }
+
+    const warn =
+      (bad ? `Skipped ${bad} malformed line(s). ` : "") +
+      `Loaded sparse matrix: ${rows} row(s) × ${cols} col(s), ${ones} “1” entries.`;
+
+    return { eventsByCol: byCol, nRows: rows, nCols: cols, nOnes: ones, warning: warn };
+  }
+
+  elPlay.addEventListener("click", () => start());
+  elStop.addEventListener("click", () => stop());
+  elRewind.addEventListener("click", () => rewind());
+
+  elSlider.addEventListener("input", () => {
+    if (!nCols) return;
+    const v = parseInt(elSlider.value, 10);
+    curStep = Number.isFinite(v) ? Math.max(0, Math.min(nCols - 1, v)) : 0;
+    setStats();
+    drawMatrix();
+  });
+
+  // Initial paint
+  enableControls(false);
+  setStats();
+  drawMatrix();
+</script>
+
+<script>
+	function addLabeledValueToTableBody(tbody, label, value)
+	{
+		const cell1 = document.createElement("td");
+		const cell2 = document.createElement("td");
+		cell1.innerHTML="<strong>"+label+"</strong>";
+		cell2.textContent=value;
+		const trow = document.createElement("tr");
+		trow.appendChild(cell1);
+		trow.appendChild(cell2);
+		tbody.appendChild(trow);
+	}
+
+	function generateAndOpenPage(tsvContent, filename)
+	{
+		let htmlContent = `
+			<!DOCTYPE html>
+			<html lang="en">
+			<head>
+				<meta charset="UTF-8">
+				<meta name="viewport" content="width=device-width, initial-scale=1.0">
+				<title>${filename}</title>
+				<style>
+					table
+					{
+						border-collapse: collapse;
+					}
+
+					table, td, th
+					{
+						border: 1px solid black;
+						padding: 5px;
+						text-align: left;
+					}
+				</style>
+			</head>
+			<body>
+				<h1>${filename}</h1>
+				<table>
+		`;
+
+		const rows = tsvContent.split('\n').map(row => row.split('\t'));
+		rows.forEach((row, index) => {
+			if(row[0])
+			{
+				htmlContent += '<tr>';
+				row.forEach(cell => {
+					htmlContent += (index === 0 ? `<th>${cell}</th>` : `<td>${cell}</td>`);
+				});
+				htmlContent += '</tr>\n';
+			}
+		});
+
+		const finalHtmlContent = htmlContent + `
+				</table>
+			</body>
+			</html>
+		`;
+
+		const newWindow = window.open('', '_blank');
+		newWindow.document.write(finalHtmlContent);
+		newWindow.document.close();
+	}
+</script>
+	
+	<script>
+		let Module;
+		(async () => { Module = await createVoronotaLTWebModule(); })();
+
+		async function runVoronotaLT(mode)
+		{
+			const container_for_input_info = document.getElementById("container-for-input-info");
+			container_for_input_info.innerHTML = "";
+
+			const container_for_error_log = document.getElementById("container-for-error-log");
+			container_for_error_log.innerHTML = "";
+
+			const container_for_log = document.getElementById("container-for-log");
+			container_for_log.innerHTML = "";
+
+			const container_for_links = document.getElementById("container-for-links");
+			container_for_links.innerHTML = "";
+
+			const fileInput = document.getElementById("fileInput");
+
+			if(fileInput.files.length === 0)
+			{
+				alert("Please provide an input file.");
+				return;
+			}
+
+			const file = fileInput.files[0];
+			const reader = new FileReader();
+
+			{
+				container_for_input_info.innerHTML = "<h3>Task overview</h3>";
+				const tbody = document.createElement("tbody");
+				addLabeledValueToTableBody(tbody, "Input file name", file.name);
+				addLabeledValueToTableBody(tbody, "Read heteroatoms", "yes");
+				addLabeledValueToTableBody(tbody, "Read as an assembly", "yes");
+				addLabeledValueToTableBody(tbody, "Solvent probe radius", "1.4");
+				addLabeledValueToTableBody(tbody, "Calculation mode", (mode=="only_inter_chain" ? "calculate only inter-chain contacts" : "calculate all contacts"));
+				const table = document.createElement("table");
+				table.appendChild(tbody);
+				container_for_input_info.appendChild(table);
+			}
+
+			container_for_error_log.innerHTML = "<h2>Running ...</h2>";
+
+			setTimeout(async () => {
+				reader.onload = async () => {
+					const input_content = reader.result;
+
+					const strings = [];
+
+					try
+					{
+						const vector = Module.generate_results(input_content, mode);
+						for(let i=0;i<vector.size();i++)
+						{
+							strings.push(vector.get(i));
+						}
+						vector.delete();
+					}
+					catch(err)
+					{
+						console.error('Exception thrown when executing:', err);
+						container_for_error_log.innerHTML = "<h3>Error log</h3>";
+						const textfield = document.createElement("pre");
+						textfield.textContent="The app was terminated by the browser, probably to save memory.\nPlease refresh the page.\n";
+						container_for_error_log.appendChild(textfield);
+						const container_for_controls = document.getElementById("container-for-controls");
+						container_for_controls.remove();
+						return;
+					}
+
+					container_for_error_log.innerHTML = "";
+
+					const tbody_for_log = document.createElement("tbody");
+					const tbody_for_links = document.createElement("tbody");
+
+					let error_message="";
+					let error_status=0;
+
+					for(let index=0;index<strings.length && error_status==0;index+=2)
+					{
+						const i1=index;
+						const i2=index+1;
+
+						if(i2>=strings.length)
+						{
+							error_message+="Failed to produce valid output.\n";
+							error_status=1;
+						}
+						else
+						{
+							if(strings[i1]=="error")
+							{
+								error_message+=strings[i2]+"\n";
+								error_status=2;
+							}
+							else if(strings[i1]=="log_total_input_balls")
+							{
+								addLabeledValueToTableBody(tbody_for_log, "Input atoms", strings[i2]);
+							}
+							else if(strings[i1]=="log_total_residues_in_input")
+							{
+								addLabeledValueToTableBody(tbody_for_log, "Input residues", strings[i2]);
+							}
+							else if(strings[i1]=="log_total_chains_in_input")
+							{
+								addLabeledValueToTableBody(tbody_for_log, "Input chains", strings[i2]);
+							}
+							else if(strings[i1]=="log_total_contacts_count")
+							{
+								addLabeledValueToTableBody(tbody_for_log, "Atom-level contacts", strings[i2]);
+							}
+							else if(strings[i1]=="log_total_contacts_area")
+							{
+								addLabeledValueToTableBody(tbody_for_log, "Total contacts area", parseFloat(strings[i2]).toFixed(2));
+							}
+							else if(strings[i1]=="log_total_residue_level_contacts_count")
+							{
+								addLabeledValueToTableBody(tbody_for_log, "Residue-level contacts", strings[i2]);
+							}
+							else if(strings[i1]=="log_total_chain_level_contacts_count")
+							{
+								addLabeledValueToTableBody(tbody_for_log, "Chain-level contacts", strings[i2]);
+							}
+							else if(strings[i1]=="log_total_cells_count")
+							{
+								addLabeledValueToTableBody(tbody_for_log, "Atom-level cell summaries", strings[i2]);
+							}
+							else if(strings[i1]=="log_total_cells_sas_area")
+							{
+								addLabeledValueToTableBody(tbody_for_log, "Total SAS area of cells", parseFloat(strings[i2]).toFixed(2));
+							}
+							else if(strings[i1]=="log_total_cells_sas_inside_volume")
+							{
+								addLabeledValueToTableBody(tbody_for_log, "Total volume inside cells", parseFloat(strings[i2]).toFixed(2));
+							}
+							else if(strings[i1]=="log_total_residue_level_cells_count")
+							{
+								addLabeledValueToTableBody(tbody_for_log, "Residue-level cell summaries", strings[i2]);
+							}
+							else if(strings[i1]=="log_total_chain_level_cells_count")
+							{
+								addLabeledValueToTableBody(tbody_for_log, "Chain-level cell summaries", strings[i2]);
+							}
+							else if(strings[i1]=="residue-level-contacts")
+							{
+								const trow = document.createElement("tr");
+
+								const filename=(strings[i1]+".tsv");
+								const blob = new Blob([strings[i2]], { type: "text/plain" });
+								const kilobytes=(blob.size/1024);
+								const megabytes=(kilobytes/1024);
+
+								{
+									const cell = document.createElement("td");
+									cell.textContent=filename;
+									trow.appendChild(cell);
+								}
+
+								{
+									const cell = document.createElement("td");
+									if(megabytes<5)
+									{
+										const link = document.createElement("a");
+										link.href = "#";
+										link.textContent = "view";
+										link.style.display = "block";
+										link.onclick = (event) => {
+											event.preventDefault();
+											generateAndOpenPage(strings[i2], filename);
+										};
+										cell.appendChild(link);
+									}
+									else
+									{
+										cell.textContent="";
+									}
+									trow.appendChild(cell);
+								}
+
+								{
+									const url = URL.createObjectURL(blob);
+									const link = document.createElement("a");
+									link.href = url;
+									link.download = filename;
+									link.textContent = "download";
+									link.style.display = "block";
+									link.onclick = () => setTimeout(() => URL.revokeObjectURL(url), 100);
+									const cell = document.createElement("td");
+									cell.appendChild(link);
+									trow.appendChild(cell);
+								}
+
+								{
+									const cell = document.createElement("td");
+									if(megabytes<1)
+									{
+										cell.textContent=""+kilobytes.toFixed(2)+" KB";
+									}
+									else
+									{
+										cell.textContent=""+megabytes.toFixed(2)+" MB";
+									}
+									trow.appendChild(cell);
+								}
+
+								tbody_for_links.appendChild(trow);
+							}
+							else if(strings[i1]=="residue-level-contact-map")
+							{
+								stop();
+								rewind();
+
+								const text = strings[i2];
+								const parsed = parseTextToSparse(text);
+
+								eventsByCol = parsed.eventsByCol;
+								nRows = parsed.nRows;
+								nCols = parsed.nCols;
+								nOnes = parsed.nOnes;
+
+								curStep = 0;
+
+								log._warnedPalette = false;
+								log(parsed.warning || "");
+
+								buildBaseRaster();
+								setStats();
+								enableControls(nCols > 0);
+								drawMatrix();
+							}
+						}
+					}
+
+					if(error_message)
+					{
+						container_for_error_log.innerHTML = "<h3>Error log</h3>";
+						const textfield = document.createElement("pre");
+						textfield.textContent=error_message;
+						container_for_error_log.appendChild(textfield);
+					}
+
+					if(error_status==0)
+					{
+						{
+							container_for_log.innerHTML = "<h3>Results summary</h3>";
+							const table = document.createElement("table");
+							table.appendChild(tbody_for_log);
+							container_for_log.appendChild(table);
+						}
+
+						{
+							container_for_links.innerHTML = "<h3>Output files</h3>";
+							const table = document.createElement("table");
+							table.appendChild(tbody_for_links);
+							container_for_links.appendChild(table);
+						}
+					}
+				};
+
+			}, 0);
+
+			reader.readAsText(file);
+		}
+	</script>
+</body>
+</html>
+
