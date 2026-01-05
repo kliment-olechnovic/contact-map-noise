@@ -3,7 +3,7 @@
 <head>
 	<meta charset="UTF-8">
 	<meta name="viewport" content="width=device-width, initial-scale=1.0">
-	<title>Play sounds based on residue-residue contact map</title>
+	<title>Voronota-LT contact map noise sequencer</title>
 		<style>
 			body { font-family: Arial, sans-serif; margin: 16px; }
 			label { display:block; margin: 10px 0 4px; }
@@ -58,11 +58,6 @@
 	<input id="stepSlider" type="range" min="0" max="0" step="1" value="0" disabled />
 
 	<canvas id="matrix" width="1200" height="700" aria-label="Matrix visualization"></canvas>
-
-	<label>Parsing errors / warnings</label>
-	<pre id="log">—</pre>
-	
-	<hr/>
 	
 	<script src="voronota_lt_web.js"></script>
 	
@@ -113,13 +108,11 @@
   const elStep = document.getElementById("step");
 
   const elSlider = document.getElementById("stepSlider");
-  const elLog = document.getElementById("log");
 
   const cv = document.getElementById("matrix");
   const ctx = cv.getContext("2d", { alpha: false });
 
   function log(msg) {
-    elLog.textContent = (msg && msg.length) ? msg : "—";
   }
 
   function setStats() {
