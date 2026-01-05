@@ -29,14 +29,8 @@
 	<div id="container-for-input-info"></div>
 	
 	<div id="container-for-error-log"></div>
-
-	<div id="container-for-log"></div>
-	
-	<div id="container-for-links"></div>
 	
 	<hr/>
-	
-	<h2>Matrix Sequencer</h2>
 
 	<label>Tempo (BPM) — one column per beat</label>
 	<input id="bpm" type="number" min="20" max="2000" step="1" value="480" />
@@ -916,18 +910,6 @@
 </script>
 
 <script>
-	function addLabeledValueToTableBody(tbody, label, value)
-	{
-		const cell1 = document.createElement("td");
-		const cell2 = document.createElement("td");
-		cell1.innerHTML="<strong>"+label+"</strong>";
-		cell2.textContent=value;
-		const trow = document.createElement("tr");
-		trow.appendChild(cell1);
-		trow.appendChild(cell2);
-		tbody.appendChild(trow);
-	}
-
 	function generateAndOpenPage(tsvContent, filename)
 	{
 		let htmlContent = `
@@ -986,17 +968,8 @@
 
 		async function runVoronotaLT(mode)
 		{
-			const container_for_input_info = document.getElementById("container-for-input-info");
-			container_for_input_info.innerHTML = "";
-
 			const container_for_error_log = document.getElementById("container-for-error-log");
 			container_for_error_log.innerHTML = "";
-
-			const container_for_log = document.getElementById("container-for-log");
-			container_for_log.innerHTML = "";
-
-			const container_for_links = document.getElementById("container-for-links");
-			container_for_links.innerHTML = "";
 
 			const fileInput = document.getElementById("fileInput");
 
@@ -1008,19 +981,6 @@
 
 			const file = fileInput.files[0];
 			const reader = new FileReader();
-
-			{
-				container_for_input_info.innerHTML = "<h3>Task overview</h3>";
-				const tbody = document.createElement("tbody");
-				addLabeledValueToTableBody(tbody, "Input file name", file.name);
-				addLabeledValueToTableBody(tbody, "Read heteroatoms", "yes");
-				addLabeledValueToTableBody(tbody, "Read as an assembly", "yes");
-				addLabeledValueToTableBody(tbody, "Solvent probe radius", "1.4");
-				addLabeledValueToTableBody(tbody, "Calculation mode", (mode=="only_inter_chain" ? "calculate only inter-chain contacts" : "calculate all contacts"));
-				const table = document.createElement("table");
-				table.appendChild(tbody);
-				container_for_input_info.appendChild(table);
-			}
 
 			container_for_error_log.innerHTML = "<h2>Running ...</h2>";
 
@@ -1053,9 +1013,6 @@
 
 					container_for_error_log.innerHTML = "";
 
-					const tbody_for_log = document.createElement("tbody");
-					const tbody_for_links = document.createElement("tbody");
-
 					let error_message="";
 					let error_status=0;
 
@@ -1075,118 +1032,6 @@
 							{
 								error_message+=strings[i2]+"\n";
 								error_status=2;
-							}
-							else if(strings[i1]=="log_total_input_balls")
-							{
-								addLabeledValueToTableBody(tbody_for_log, "Input atoms", strings[i2]);
-							}
-							else if(strings[i1]=="log_total_residues_in_input")
-							{
-								addLabeledValueToTableBody(tbody_for_log, "Input residues", strings[i2]);
-							}
-							else if(strings[i1]=="log_total_chains_in_input")
-							{
-								addLabeledValueToTableBody(tbody_for_log, "Input chains", strings[i2]);
-							}
-							else if(strings[i1]=="log_total_contacts_count")
-							{
-								addLabeledValueToTableBody(tbody_for_log, "Atom-level contacts", strings[i2]);
-							}
-							else if(strings[i1]=="log_total_contacts_area")
-							{
-								addLabeledValueToTableBody(tbody_for_log, "Total contacts area", parseFloat(strings[i2]).toFixed(2));
-							}
-							else if(strings[i1]=="log_total_residue_level_contacts_count")
-							{
-								addLabeledValueToTableBody(tbody_for_log, "Residue-level contacts", strings[i2]);
-							}
-							else if(strings[i1]=="log_total_chain_level_contacts_count")
-							{
-								addLabeledValueToTableBody(tbody_for_log, "Chain-level contacts", strings[i2]);
-							}
-							else if(strings[i1]=="log_total_cells_count")
-							{
-								addLabeledValueToTableBody(tbody_for_log, "Atom-level cell summaries", strings[i2]);
-							}
-							else if(strings[i1]=="log_total_cells_sas_area")
-							{
-								addLabeledValueToTableBody(tbody_for_log, "Total SAS area of cells", parseFloat(strings[i2]).toFixed(2));
-							}
-							else if(strings[i1]=="log_total_cells_sas_inside_volume")
-							{
-								addLabeledValueToTableBody(tbody_for_log, "Total volume inside cells", parseFloat(strings[i2]).toFixed(2));
-							}
-							else if(strings[i1]=="log_total_residue_level_cells_count")
-							{
-								addLabeledValueToTableBody(tbody_for_log, "Residue-level cell summaries", strings[i2]);
-							}
-							else if(strings[i1]=="log_total_chain_level_cells_count")
-							{
-								addLabeledValueToTableBody(tbody_for_log, "Chain-level cell summaries", strings[i2]);
-							}
-							else if(strings[i1]=="residue-level-contacts")
-							{
-								const trow = document.createElement("tr");
-
-								const filename=(strings[i1]+".tsv");
-								const blob = new Blob([strings[i2]], { type: "text/plain" });
-								const kilobytes=(blob.size/1024);
-								const megabytes=(kilobytes/1024);
-
-								{
-									const cell = document.createElement("td");
-									cell.textContent=filename;
-									trow.appendChild(cell);
-								}
-
-								{
-									const cell = document.createElement("td");
-									if(megabytes<5)
-									{
-										const link = document.createElement("a");
-										link.href = "#";
-										link.textContent = "view";
-										link.style.display = "block";
-										link.onclick = (event) => {
-											event.preventDefault();
-											generateAndOpenPage(strings[i2], filename);
-										};
-										cell.appendChild(link);
-									}
-									else
-									{
-										cell.textContent="";
-									}
-									trow.appendChild(cell);
-								}
-
-								{
-									const url = URL.createObjectURL(blob);
-									const link = document.createElement("a");
-									link.href = url;
-									link.download = filename;
-									link.textContent = "download";
-									link.style.display = "block";
-									link.onclick = () => setTimeout(() => URL.revokeObjectURL(url), 100);
-									const cell = document.createElement("td");
-									cell.appendChild(link);
-									trow.appendChild(cell);
-								}
-
-								{
-									const cell = document.createElement("td");
-									if(megabytes<1)
-									{
-										cell.textContent=""+kilobytes.toFixed(2)+" KB";
-									}
-									else
-									{
-										cell.textContent=""+megabytes.toFixed(2)+" MB";
-									}
-									trow.appendChild(cell);
-								}
-
-								tbody_for_links.appendChild(trow);
 							}
 							else if(strings[i1]=="residue-level-contact-map")
 							{
@@ -1220,23 +1065,6 @@
 						const textfield = document.createElement("pre");
 						textfield.textContent=error_message;
 						container_for_error_log.appendChild(textfield);
-					}
-
-					if(error_status==0)
-					{
-						{
-							container_for_log.innerHTML = "<h3>Results summary</h3>";
-							const table = document.createElement("table");
-							table.appendChild(tbody_for_log);
-							container_for_log.appendChild(table);
-						}
-
-						{
-							container_for_links.innerHTML = "<h3>Output files</h3>";
-							const table = document.createElement("table");
-							table.appendChild(tbody_for_links);
-							container_for_links.appendChild(table);
-						}
 					}
 				};
 
