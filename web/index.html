@@ -3,7 +3,7 @@
 <head>
 	<meta charset="UTF-8">
 	<meta name="viewport" content="width=device-width, initial-scale=1.0">
-	<title>Voronota-LT contact map noise sequencer</title>
+	<title>Contact Map Noise Sequencer</title>
 		<style>
 			body { font-family: Arial, sans-serif; margin: 16px; }
 			label { display:block; margin: 10px 0 4px; }
@@ -18,6 +18,8 @@
 		</style>
 </head>
 <body>
+	<h2>Contact Map Noise Sequencer</h2>
+	
 	<div id="container-for-controls">
 		<label for="fileInput">Input PDB or mmCIF file:</label>
 		<input id="fileInput" type="file" autocomplete="off"/>
@@ -46,16 +48,6 @@
 	  <button id="stop" disabled>Stop</button>
 	  <button id="rewind" disabled>Rewind</button>
 	</div>
-
-	<div class="stats">
-	  <div>Rows: <span id="rows">—</span></div>
-	  <div>Cols: <span id="cols">—</span></div>
-	  <div>Ones: <span id="ones">—</span></div>
-	  <div>Step: <span id="step">—</span></div>
-	</div>
-
-	<label>Step slider</label>
-	<input id="stepSlider" type="range" min="0" max="0" step="1" value="0" disabled />
 
 	<canvas id="matrix" width="1200" height="700" aria-label="Matrix visualization"></canvas>
 	
@@ -102,13 +94,6 @@
   const elStop = document.getElementById("stop");
   const elRewind = document.getElementById("rewind");
 
-  const elRows = document.getElementById("rows");
-  const elCols = document.getElementById("cols");
-  const elOnes = document.getElementById("ones");
-  const elStep = document.getElementById("step");
-
-  const elSlider = document.getElementById("stepSlider");
-
   const cv = document.getElementById("matrix");
   const ctx = cv.getContext("2d", { alpha: false });
 
@@ -116,21 +101,12 @@
   }
 
   function setStats() {
-    elRows.textContent = nRows ? String(nRows) : "—";
-    elCols.textContent = nCols ? String(nCols) : "—";
-    elOnes.textContent = nOnes ? String(nOnes) : "—";
-    elStep.textContent = nCols ? String(curStep) : "—";
   }
 
   function enableControls(loaded) {
     elPlay.disabled = !loaded;
     elStop.disabled = !loaded;
     elRewind.disabled = !loaded;
-
-    elSlider.disabled = !loaded;
-    elSlider.min = 0;
-    elSlider.max = loaded ? String(Math.max(0, nCols - 1)) : "0";
-    elSlider.value = loaded ? String(curStep) : "0";
   }
 
   // -------------------------------
@@ -762,7 +738,6 @@
       nextNoteTime += stepDurationSec();
       curStep = (curStep + 1) % nCols;
 
-      elSlider.value = String(curStep);
       setStats();
     }
 
@@ -802,7 +777,6 @@
 
   function rewind() {
     curStep = 0;
-    elSlider.value = "0";
     setStats();
     drawMatrix();
   }
@@ -887,14 +861,6 @@
   elPlay.addEventListener("click", () => start());
   elStop.addEventListener("click", () => stop());
   elRewind.addEventListener("click", () => rewind());
-
-  elSlider.addEventListener("input", () => {
-    if (!nCols) return;
-    const v = parseInt(elSlider.value, 10);
-    curStep = Number.isFinite(v) ? Math.max(0, Math.min(nCols - 1, v)) : 0;
-    setStats();
-    drawMatrix();
-  });
 
   // Initial paint
   enableControls(false);
