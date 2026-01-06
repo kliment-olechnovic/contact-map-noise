@@ -125,7 +125,8 @@
     return h / 4294967295;
   }
   function randRange(row, col, salt, lo, hi) {
-    return lo + (hi - lo) * rand01(row, col, salt);
+	return (lo + (hi-lo)*(row/(nRows+1)*0.25+rand01(row, col, salt)*0.75));
+    //return lo + (hi - lo) * rand01(row, col, salt);
   }
 
   // -------------------------------
