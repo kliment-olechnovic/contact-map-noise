@@ -9,6 +9,8 @@
 			pre { white-space: pre-wrap; border: 1px solid #ddd; padding: 8px; min-height: 44px; }
 			table { border-collapse: collapse; }
 			table, td, th { border: 0px solid black; padding: 0px; text-align: left; }
+			label { padding: 5px; }
+			input, button { padding: 5px; margin-left: 5px; margin-bottom: 5px; }
 		</style>
 </head>
 <body>
@@ -19,7 +21,7 @@
 		<tbody>
 			<tr>
 				<td>
-					<strong>Upload input file:</strong>
+					<label>Upload input file:</label>
 				</td>
 				<td>
 					<label for="fileInput">PDB or mmCIF file:</label>
@@ -28,7 +30,7 @@
 			</tr>
 			<tr>
 				<td>
-					<strong>or fetch input file by PDB ID:</strong>
+					<label>or fetch input file by PDB ID:</label>
 				</td>
 				<td>
 					<input id="pdbIdInput" type="text" autocomplete="off" placeholder="e.g. 2ZSK" style="width: 10em;"/>
@@ -38,7 +40,7 @@
 			</tr>
 			<tr>
 				<td>
-					<strong>Perform action using Voronota-LT:</strong>
+					<label>Perform action using Voronota-LT:</label>
 				</td>
 				<td>
 					<button onclick="runVoronotaLT('all')">Calculate all contacts</button>
@@ -56,15 +58,15 @@
 	<table>
 		<tbody>
 			<tr>
-				<td>Tempo (BPM)</td>
+				<td><label>Tempo (BPM)</label></td>
 				<td><input id="bpm" type="number" min="20" max="2000" step="1" value="480" /></td>
-				<td>Volume</td>
+				<td><label>Volume</label></td>
 				<td><input id="vol" type="range" min="0" max="1" step="0.001" value="0.85" /></td>
 			</tr>
 		</tbody>
 	</table>
 		
-	Instrument palette (comma-separated, repeats by row):
+	<label>Instrument palette (comma-separated, repeats by row):</label>
 	<br/>
 	<input id="palette" type="text" style="width: 100%;" value="Kick, Snare, Closed Hat, Open Hat, Rimshot, Cowbell, Tambourine, Shaker, Conga Low, Conga High, Bongo, Woodblock, Bass Pluck, Funk Guitar, Electric Piano, Synth Lead, Synth Chord, FX Zap" />
 
