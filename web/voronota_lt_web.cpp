@@ -23,7 +23,8 @@ std::vector<std::string> generate_results(const std::string& input_data, const s
 
 	const voronotalt::MolecularFileReading::Parameters molecular_file_reading_parameters(true, false, true);
 	const double probe=1.4;
-	const bool compute_only_inter_chain_contacts=(options=="only_inter_chain");
+	const bool compute_only_inter_chain_contacts=(options.find("only_inter_chain")!=std::string::npos);
+	const bool output_atom_level=(options.find("atom_level")!=std::string::npos);
 
 	voronotalt::SpheresInput::Result spheres_input_result;
 
@@ -114,15 +115,7 @@ std::vector<std::string> generate_results(const std::string& input_data, const s
 	const bool minimum_columns=true;
 	const bool no_icode=!spheres_input_result.labels_have_icodes;
 
-	if(!result_grouped_by_residue.grouped_contacts_summaries.empty())
 	{
-		{
-			std::string output;
-			voronotalt::PrintingCustomTypes::print_contacts_residue_level(result.contacts_summaries, spheres_input_result.sphere_labels, result_grouped_by_residue.grouped_contacts_representative_ids, result_grouped_by_residue.grouped_contacts_summaries, minimum_columns, no_icode, output);
-			results.push_back(std::string("residue-level-contacts"));
-			results.push_back(output);
-		}
-
 		{
 			std::set<std::string> plot_options_config;
 			plot_options_config.insert("plain-integer-coords");
@@ -134,7 +127,7 @@ std::vector<std::string> generate_results(const std::string& input_data, const s
 			std::ostringstream output;
 
 			{
-				voronotalt::ContactPlotter plotter(voronotalt::ContactPlotter::LevelMode::inter_residue);
+				voronotalt::ContactPlotter plotter(output_atom_level ? voronotalt::ContactPlotter::LevelMode::inter_atom : voronotalt::ContactPlotter::LevelMode::inter_residue);
 				bool all_good=true;
 				for(std::size_t i=0;all_good && i<result.contacts_summaries.size();i++)
 				{

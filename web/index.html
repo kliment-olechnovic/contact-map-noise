@@ -19,7 +19,7 @@
 	<label>Usage instructions:</label>
 	<ol>
 		<li>Select a local file or fetch a file by PDB ID;</li>
-		<li>Press one of the buttons to calculate contacts using Wasm <a href="https://www.voronota.com/expansion_lt/index.html">Voronota-LT</a> (the <strong>inter-chain</strong> mode is recommended for more interesting patterns);</li>
+		<li>Press one of the buttons to calculate contacts using Wasm <a href="https://www.voronota.com/expansion_lt/index.html">Voronota-LT</a> (the <strong>inter-chain</strong> modes are recommended for more interesting patterns);</li>
 		<li>Press "Play";</li>
 		<li>Adjust the tempo, the volume, and the instrument palette in real time. Or add <a href="https://en.wikipedia.org/wiki/More_Cowbell">more cowbell</a>.</li>
 	</ol>
@@ -50,11 +50,12 @@
 			</tr>
 			<tr>
 				<td>
-					<label>Perform action using Voronota-LT:</label>
+					<label>Calculate contacts using Voronota-LT:</label>
 				</td>
 				<td>
-					<button onclick="runVoronotaLT('all')">Calculate all contacts</button>
-					<button onclick="runVoronotaLT('only_inter_chain')">Calculate only inter-chain contacts</button>
+					<button onclick="runVoronotaLT('all')">All, output on residue level</button>
+					<button onclick="runVoronotaLT('only_inter_chain')">Inter-chain, output on residue level</button>
+					<button onclick="runVoronotaLT('only_inter_chain_atom_level')">Inter-chain, output on atom level</button>
 				</td>
 			</tr>
 		</tbody>
